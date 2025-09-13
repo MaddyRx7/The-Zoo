@@ -1,52 +1,45 @@
+```cpp
 #include <Servo.h>
 #include <ZooUART_MEGA.h>
 #include <math.h>
 
+/* ─── DEVICE / NETWORK CONFIG ───────────────────── */
+const int deviceID  = 7;                   // This board’s unique ZooUART ID
+const int numServos = 9;                   // Number of servos used
+const int servoPins[numServos]  = {2, 3, 4, 5, 6, 7, 8, 9, 10}; // Digital pins for servos
 
-const int deviceID  = 7;
-const int numServos = 9;
-const int servoPins[numServos]  = {2, 3, 4, 5, 6, 7, 8, 9, 10};
+const int NUM_SENSORS = 9;                 // Number of pressure sensors
+const int sensorPins[NUM_SENSORS] = {A0, A1, A2, A3, A4, A5, A6, A7, A8}; // Analog pins for sensors
 
-const int NUM_SENSORS = 9;
-const int sensorPins[NUM_SENSORS] = {A0, A1, A2, A3, A4, A5, A6, A7, A8};
+/* ─── SENSOR CONFIG ─────────────────────────────── */
+const int SENSOR_THRESHOLD    = 100;       // Minimum delta from baseline to register a press
+const unsigned long WINDOW_MS = 5000;      // Time window (ms) to capture peak after press
 
-const int SENSOR_THRESHOLD    = 100;          
-const unsigned long WINDOW_MS = 5000;  
+/* ─── SENSOR STATE VARIABLES ────────────────────── */
+int baseline[NUM_SENSORS];                 // Baseline (idle) values per sensor
 
-int baseline[NUM_SENSORS];   // 
+bool          peakMode      = false;       // Whether we are currently in a peak-capturing window
+int           activeSensor  = -1;          // Which sensor triggered the window
+unsigned long windowStart   = 0;           // When the window started
+int           peakReading   = 0;           // Highest value recorded during window
 
-
-bool          peakMode      = false;
-int           activeSensor  = -1;
-unsigned long windowStart   = 0;
-int           peakReading   = 0;
-
-
-
-int initialAngle[numServos] = {
-  0, // Servo 0  (pin 2)
-  0, // Servo 1  (pin 3)
-  0, // Servo 2  (pin 4)
-  0,// Servo 3  (pin 5)
-  0, // Servo 4  (pin 6)
-  0, // Servo 5  (pin 7)
-  0,// Servo 6  (pin 8)
-  0, // Servo 7  (pin 9)
-  0,  // Servo 8  (pin 10)
+/* ─── SERVO CONFIG ─────────────────────────────── */
+int initialAngle[numServos] = {            // Manually defined initial servo angles
+  0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
-const int MAX_OFFSET = 90; 
+const int MAX_OFFSET = 90;                 // Maximum allowed offset from initial angle
 
-
+/* ─── OBJECTS ───────────────────────────────────── */
 Servo   servos[numServos];
 ZooUART zoo(deviceID);
 
-
+/* ─── SETUP ─────────────────────────────────────── */
 void setup() {
   Serial.begin(9600);
   zoo.begin();
 
-  
+  // Attach all servos at their defined initial positions
   for (int i = 0; i < numServos; i++) {
     servos[i].attach(servoPins[i]);
     servos[i].write(initialAngle[i]);
@@ -54,46 +47,48 @@ void setup() {
   }
   Serial.println(F("Servos attached at user‑defined initial angles."));
 
+  // Register message handlers for network communication
   zoo.onGlobalMessage(GlobalMessageHandler);
   zoo.onDirectMessage(DirectMessageHandler);
     
+  // Record sensor baselines (initial idle readings)
   for (int i = 0; i < NUM_SENSORS; i++) {
     baseline[i] = analogRead(sensorPins[i]);
     delay(5);
   }
   Serial.println(F("Pressure baselines recorded."));
-
 }
 
-
+/* ─── MAIN LOOP ─────────────────────────────────── */
 void loop() {
-  
   if (!peakMode) {
-    zoo.watch();           // receive as usual
-    checkSensors();        // look for a new trigger
+    zoo.watch();           // Keep listening for incoming messages
+    checkSensors();        // Check if any sensor is triggered
   } else {
-    capturePeak();         // we’re in the 10‑s window
+    capturePeak();         // If in peak mode, keep recording until window ends
   }
 }
 
-
-
+/* ─── MESSAGE HANDLERS ─────────────────────────── */
+// Handle global messages from the network
 void GlobalMessageHandler(int sender, int value) {
   Serial.print(F("GLOBAL from ")); Serial.print(sender);
   Serial.print(F(" | Intensity ")); Serial.println(value);
   triggerPattern(sender, value);
 }
 
+// Handle direct messages from the network
 void DirectMessageHandler(int sender, int value) {
   Serial.print(F("DIRECT from ")); Serial.print(sender);
   Serial.print(F(" | Intensity ")); Serial.println(value);
   triggerPattern(sender, value);
 }
 
-
+/* ─── SERVO PATTERN DISPATCH ───────────────────── */
+// Trigger motor movement patterns based on sender ID
 void triggerPattern(int sender, int value) {
-  int id           = sender % numServos;
-  int angleOffset = map(value, 0, 255, 15, 60);  
+  int id           = sender % numServos;                   // Map sender to a servo index
+  int angleOffset = map(value, 0, 255, 15, 60);            // Map intensity to movement offset
 
   switch (id) {
     case 0: pulseAll(angleOffset);        break;
@@ -108,10 +103,9 @@ void triggerPattern(int sender, int value) {
   }
 }
 
-
-
+/* ─── SERVO MOVEMENT HELPERS ───────────────────── */
+// Clamp servo movement within safe offset limits
 int clampAngle(int base, int angle) {
-  
   int lowerBound = max(0, base - MAX_OFFSET);
   int upperBound = min(180, base + MAX_OFFSET);
   if (angle < lowerBound) return lowerBound;
@@ -119,6 +113,7 @@ int clampAngle(int base, int angle) {
   return angle;
 }
 
+// Pattern: All servos pulse together
 void pulseAll(int offset) {
   for (int r = 0; r < 2; r++) {
     for (int i = 0; i < numServos; i++)
@@ -129,6 +124,7 @@ void pulseAll(int offset) {
   }
 }
 
+// Pattern: Wave left to right
 void waveLeftToRight(int offset) {
   for (int i = 0; i < numServos; i++) {
     servos[i].write(clampAngle(initialAngle[i], initialAngle[i] + offset));
@@ -137,6 +133,7 @@ void waveLeftToRight(int offset) {
   }
 }
 
+// Pattern: Wave right to left
 void waveRightToLeft(int offset) {
   for (int i = numServos - 1; i >= 0; i--) {
     servos[i].write(clampAngle(initialAngle[i], initialAngle[i] + offset));
@@ -145,6 +142,7 @@ void waveRightToLeft(int offset) {
   }
 }
 
+// Pattern: Expand from center outward
 void centerOutward(int offset) {
   int mid = numServos / 2;
   for (int r = 0; r <= mid; r++) {
@@ -158,6 +156,7 @@ void centerOutward(int offset) {
   resetServos();
 }
 
+// Pattern: Alternate even and odd servos
 void alternateEvenOdd(int offset) {
   for (int r = 0; r < 2; r++) {
     for (int i = 0; i < numServos; i++) {
@@ -170,6 +169,7 @@ void alternateEvenOdd(int offset) {
   }
 }
 
+// Pattern: Sequential up
 void sequentialUp(int offset) {
   for (int i = 0; i < numServos; i++) {
     servos[i].write(clampAngle(initialAngle[i], initialAngle[i] + offset));
@@ -178,6 +178,7 @@ void sequentialUp(int offset) {
   }
 }
 
+// Pattern: Sequential down
 void sequentialDown(int offset) {
   for (int i = numServos - 1; i >= 0; i--) {
     servos[i].write(clampAngle(initialAngle[i], initialAngle[i] - offset));
@@ -186,6 +187,7 @@ void sequentialDown(int offset) {
   }
 }
 
+// Pattern: Bounce between end servos
 void bounceEnds(int offset) {
   for (int r = 0; r < 2; r++) {
     servos[0].write(clampAngle(initialAngle[0], initialAngle[0] + offset));
@@ -196,6 +198,7 @@ void bounceEnds(int offset) {
   }
 }
 
+// Pattern: Oscillating sine wave motion
 void sineOscillation(int offset) {
   for (int t = 0; t <= 180; t += 6) {
     float rad = t * PI / 180.0;
@@ -209,43 +212,41 @@ void sineOscillation(int offset) {
   resetServos();
 }
 
-
-
+// Reset all servos back to initial angles
 void resetServos() {
   for (int i = 0; i < numServos; i++)
     servos[i].write(initialAngle[i]);
 }
 
-
+/* ─── SENSOR CHECKING & MESSAGE SENDING ────────── */
+// Look for a sensor press (trigger event)
 void checkSensors() {
   for (int i = 0; i < NUM_SENSORS; i++) {
     int raw = analogRead(sensorPins[i]);
     int diff = raw - baseline[i];
     if (diff > SENSOR_THRESHOLD) {      
-      peakMode     = true;
-      activeSensor = i;
-      windowStart  = millis();
-      peakReading  = diff;
+      peakMode     = true;                // Enter peak capture mode
+      activeSensor = i;                   // Mark which sensor triggered
+      windowStart  = millis();            // Start capture window
+      peakReading  = diff;                // Initialize peak with first reading
       Serial.print(F("Sensor ")); Serial.print(i);
       Serial.println(F(" triggered → entering 5s window"));
-      return;                            
+      return;                             // Exit loop after first trigger
     }
   }
 }
 
-
+// During the 5s window, record peak value and send message
 void capturePeak() {
-  
   int raw  = analogRead(sensorPins[activeSensor]);
   int diff = raw - baseline[activeSensor];
-  if (diff > peakReading) peakReading = diff;
+  if (diff > peakReading) peakReading = diff;  // Track highest value
 
-  
-  if (millis() - windowStart >= WINDOW_MS) {
+  if (millis() - windowStart >= WINDOW_MS) {   // When window ends
     int intensity = map(peakReading, 0, 1023, 0, 255);
     intensity = constrain(intensity, 0, 255);
 
-    
+    // Construct and send ZooUART message to corresponding device
     String msg = zoo.createMessage(
         /*ping*/   false,
         /*global*/ false,
@@ -257,7 +258,9 @@ void capturePeak() {
     Serial.print(F("Sent intensity ")); Serial.print(intensity);
     Serial.print(F(" to device ")); Serial.println(activeSensor);
 
+    // Reset state after sending
     peakMode      = false;          
     activeSensor  = -1;
   }
 }
+```
